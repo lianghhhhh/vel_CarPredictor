@@ -1,0 +1,10 @@
+{
+    "name": "model",
+    "model":{
+        "hidden_size": 128,
+        "dropout": 0.2,
+        "learning_rate": 1e-4,
+        "epochs": 300
+    },
+    "data": "../newCarData.csv"
+}
