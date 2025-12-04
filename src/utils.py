@@ -33,8 +33,7 @@ def getInputData(data_path):
         angle_rad = np.deg2rad(states[i][2])
         local_dx = global_dx * np.cos(angle_rad) + global_dz * np.sin(angle_rad)
         local_dz = -global_dx * np.sin(angle_rad) + global_dz * np.cos(angle_rad)
-        # state_delta.append([local_dx, local_dz, d_angle])
-        state_delta.append([global_dx, global_dz, d_angle])
+        state_delta.append([local_dx, local_dz, d_angle])
 
     vels, vel_scaler = normalize(np.array(vels))
     state_delta, state_scaler = normalize(np.array(state_delta))
