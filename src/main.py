@@ -4,9 +4,9 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from carPredictor import CarPredictor
-from utils import getInputData, loadConfig
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import TensorDataset, DataLoader
+from utils import getInputData, loadConfig, splitTrainVal
 
 def selectMode():
     print("Select mode:")
@@ -15,42 +15,71 @@ def selectMode():
     mode = input("Enter mode (1 or 2): ")
     return mode
 
-def trainModel(model, vel_tensor, state_tensor, epochs=100, learning_rate=0.001, name="model"):
+def trainModel(model, input_tensor, output_tensor, epochs=100, learning_rate=0.001, name="model"):
     if os.path.exists(f'../{config["name"]}.pth'):
         print(f"Model {config['name']} already exists. Loading existing model.")
         model.load_state_dict(torch.load(f'../{config["name"]}.pth'))
     else:
         print(f"Using new model {config['name']}.")
+        
+    # Prepare sliding window dataset: use 10 steps to predict the next step
+    window_size = 10
+    X = []
+    Y = []
+    for i in range(len(input_tensor) - window_size):
+        X.append(input_tensor[i:i+window_size])
+        Y.append(output_tensor[i+window_size])
+    X = torch.stack(X)  # shape: (num_samples, window_size, vel_dim)
+    Y = torch.stack(Y)  # shape: (num_samples, state_dim)
+
+    train_x, train_y, val_x, val_y = splitTrainVal(X, Y)
+
+    train_dataset = TensorDataset(train_x, train_y)
+    train_dataloader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+    val_dataset = TensorDataset(val_x, val_y)
+    val_dataloader = DataLoader(val_dataset, batch_size=64, shuffle=False)
 
     criterion = torch.nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     model.to(device)
-    vel_tensor = vel_tensor.to(device)
-    state_tensor = state_tensor.to(device)
-    dataset = TensorDataset(vel_tensor, state_tensor)
-    dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
+
     log_dir = os.path.join(os.path.dirname(__file__), '..', 'logs', name)
     os.makedirs(log_dir, exist_ok=True)
     writer = SummaryWriter(log_dir=log_dir)
 
     for epoch in range(epochs):
         train_loss = 0.0
-        for i, data in enumerate(dataloader):
-            batch_vel = data[0]
-            batch_state = data[1]
+        for batch_input, batch_output in train_dataloader:
+            batch_input = batch_input.to(device)  # shape: (batch, window_size, vel_dim)
+            batch_output = batch_output.to(device)  # shape: (batch, state_dim)
             model.train()
             optimizer.zero_grad()
-            x_dot_pred = model(batch_vel)
-            loss = criterion(x_dot_pred, batch_state)
+            batch_input_flat = batch_input.view(batch_input.size(0), -1)  # flatten to (batch, window_size * vel_dim)
+            batch_pred = model(batch_input_flat)
+            loss = criterion(batch_pred, batch_output)
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
 
-        loss_avg = train_loss / len(dataloader)
-        print(f'Epoch [{epoch+1}/{epochs}], Loss: {loss_avg}')
-        writer.add_scalar('Loss/train', loss_avg, epoch+1)
+        # Validation loop
+        val_loss = 0.0
+        model.eval()
+        with torch.no_grad():
+            for val_input, val_output in val_dataloader:
+                val_input = val_input.to(device)
+                val_output = val_output.to(device)
+                val_input_flat = val_input.view(val_input.size(0), -1)  # flatten
+                val_pred = model(val_input_flat)
+                v_loss = criterion(val_pred, val_output)
+                val_loss += v_loss.item()
+
+        train_loss_avg = train_loss / len(train_dataloader)
+        val_loss_avg = val_loss / len(val_dataloader)
+        print(f'Epoch [{epoch+1}/{epochs}], Train Loss: {train_loss_avg}, Val Loss: {val_loss_avg}')
+        writer.add_scalar('Loss/train', train_loss_avg, epoch+1)
+        writer.add_scalar('Loss/val', val_loss_avg, epoch+1)
 
         os.makedirs(os.path.join(os.path.dirname(__file__), '..', 'models', name), exist_ok=True)
         if (epoch + 1) % 100 == 0:
@@ -61,36 +90,44 @@ def trainModel(model, vel_tensor, state_tensor, epochs=100, learning_rate=0.001,
     print(f'Model saved as {name}.pth')
 
 
-def runInference(model, vel_tensor, state_tensor, state_scaler, name="model"):
+def runInference(model, input_tensor, output_tensor, output_scaler, name="model"):
+    window_size = 10
+    X = []
+    Y = []
+    for i in range(len(input_tensor) - window_size):
+        X.append(input_tensor[i:i+window_size])
+        Y.append(output_tensor[i+window_size])
+    X = torch.stack(X)  # shape: (num_samples, window_size, vel_dim)
+    Y = torch.stack(Y)  # shape: (num_samples, state_dim)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
-    vel_tensor = vel_tensor.to(device)
-    state_tensor = state_tensor.to(device)
-    print(vel_tensor.shape, state_tensor.shape)
+    X = X.to(device)
+    Y = Y.to(device)
+    print(X.shape, Y.shape)
     pred_list = []
 
     with torch.no_grad():
-        for i in range(vel_tensor.shape[0]):
-            input_vel = vel_tensor[i].unsqueeze(0)  # shape: (1, 3)
-            x_dot_pred = model(input_vel)  # shape: (1, 3)
+        for i in range(X.shape[0]):
+            input = X[i].view(1, -1)  # shape: (1, window_size * vel_dim)
+            x_dot_pred = model(input)  # shape: (1, 3)
             pred_list.append(x_dot_pred.unsqueeze(0))  # shape: (1, 1, 3)
 
     x_pred = torch.cat(pred_list, dim=0)
     x_pred = x_pred.cpu().numpy() # shape: (time_steps, 1, 3)
-    x_pred = state_scaler.inverse_transform(x_pred.reshape(-1, 3)).reshape(x_pred.shape)
+    x_pred = output_scaler.inverse_transform(x_pred.reshape(-1, 3)).reshape(x_pred.shape)
 
-    state_tensor = state_tensor.cpu().numpy()
-    state_tensor = state_scaler.inverse_transform(state_tensor.reshape(-1, 3)).reshape(state_tensor.shape)
+    Y = Y.cpu().numpy()
+    Y = output_scaler.inverse_transform(Y.reshape(-1, 3)).reshape(Y.shape)
 
     print(x_pred[0])
-    print(state_tensor[0])
-
+    print(Y[0])
     # plot the differences
     time_steps = np.arange(x_pred.shape[0])
     fig, axs = plt.subplots(3, 1, figsize=(10, 12))
     for i in range(3):
-        difference = x_pred[:, 0, i]-state_tensor[:, i]
+        difference = x_pred[:, 0, i]-Y[:, i]
         axs[i].plot(time_steps, difference, label='Difference', color='red')
         axs[i].set_title(f'Dimension {i+1}')
         axs[i].set_xlabel('Time Step')
@@ -103,17 +140,16 @@ def runInference(model, vel_tensor, state_tensor, state_scaler, name="model"):
 if __name__ == "__main__":
     mode = selectMode()
     config = loadConfig()
-    train_vels, train_states, test_vels, test_states, vel_scaler, state_scaler = getInputData(config['data'])
+    train_input, train_output, test_input, test_output, input_scaler, output_scaler = getInputData(config['data'])
 
-    train_vels = torch.tensor(train_vels).float()
-    train_states = torch.tensor(train_states).float()
-    test_vels = torch.tensor(test_vels).float()
-    test_states = torch.tensor(test_states).float()
+    train_input = torch.tensor(train_input).float()
+    train_output = torch.tensor(train_output).float()
+    test_input = torch.tensor(test_input).float()
+    test_output = torch.tensor(test_output).float()
 
     print("Sample")
-    print("vel:", train_vels[0:5], "shape:", train_vels.shape)
-    print("state:", train_states[0:5], "shape:", train_states.shape)
-
+    print("input:", train_input[0:5], "shape:", train_input.shape)
+    print("output:", train_output[0:5], "shape:", train_output.shape)
     model = CarPredictor(
         hidden_size=config['model']['hidden_size'],
         dropout=config['model']['dropout']
@@ -121,24 +157,24 @@ if __name__ == "__main__":
 
     if mode == "1":
         print("Training model.")
-        trainModel(model, train_vels, train_states, config['model']['epochs'], config['model']['learning_rate'], config['name'])
+        trainModel(model, train_input, train_output, config['model']['epochs'], config['model']['learning_rate'], config['name'])
 
     elif mode == "2":
         print("Inference")
         model.load_state_dict(torch.load(f'../{config["name"]}.pth'))
-        runInference(model, test_vels, test_states, state_scaler, config['name'])
+        runInference(model, test_input, test_output, output_scaler, config['name'])
 
     else:
         model.load_state_dict(torch.load(f'../{config["name"]}.pth'))
-        test_vels = [100, 100, 100, 100]
-        test_vels = vel_scaler.transform(np.array(test_vels))
-        test_vels = torch.tensor(test_vels).float()
-        test_states = [0,0,0,1]
-        test_states = torch.tensor(test_states).float()
+        test_input = [100, 100, 100, 100]
+        test_input = input_scaler.transform(np.array(test_input))
+        test_input = torch.tensor(test_input).float()
+        test_output = [0,0,0,1]
+        test_output = torch.tensor(test_output).float()
         # Ensure both tensors have the same batch dimension
-        test_vels = test_vels.unsqueeze(0)  # shape: (1, 4, 1)
-        test_states = test_states.unsqueeze(0)  # shape: (1, 4, 1)
-        input = torch.cat((test_vels, test_states), dim=2)  # concatenate along last dimension
+        test_input = test_input.unsqueeze(0)  # shape: (1, 4, 1)
+        test_output = test_output.unsqueeze(0)  # shape: (1, 4, 1)
+        input = torch.cat((test_input, test_output), dim=2)  # concatenate along last dimension
         print("Initial input:")
         print(input)
         predict_x = []
@@ -147,7 +183,7 @@ if __name__ == "__main__":
             for step in range(50):  # predict 50 steps ahead
                 next_x = model(input)
                 predict_x.append(next_x.cpu().numpy())
-                input = torch.cat((test_vels, next_x), dim=2)
+                input = torch.cat((test_input, next_x), dim=2)
 
             print("Predicted x over 50 steps:")
             predict_x = np.array(predict_x).squeeze()

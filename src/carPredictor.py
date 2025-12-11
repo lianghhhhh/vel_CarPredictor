@@ -1,9 +1,9 @@
 # a neural network model using car's target velocity and current velocity to predict delta state
-import torch
+
 import torch.nn as nn
 
 class CarPredictor(nn.Module):
-    def __init__(self, input_size=4, hidden_size=128, output_size=3, dropout=0.2):
+    def __init__(self, input_size=70, hidden_size=128, output_size=3, dropout=0.2):
         super().__init__()
         self.model = nn.Sequential(
             nn.Linear(input_size, hidden_size),
