@@ -1,59 +1,41 @@
 import os
-import csv
 import json
-import joblib
 import numpy as np
+import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 
 def getInputData(data_path):
-    target_vels = []
-    car_pos = []
-    current_vels = []
-    target_pos = []
+    df = pd.read_csv(data_path)
+    inputs = []
+    outputs = []
 
-    with open(data_path, mode='r', encoding='utf-8') as file:
-        reader = csv.reader(file)
-        next(reader)  # Skip header
-        for row in reader:
-            target_vels.append([float(row[1]), float(row[2])])  # target velocity
-            current_vels.append([float(row[3]), float(row[4])])  # current velocity
-            car_pos.append([float(row[5]), float(row[6]), float(row[7])])  # position x, z, angle
-            target_pos.append([float(row[8]), float(row[9]), float(row[10])])  # target position x, z, angle
+    angle = np.deg2rad(df['angle'].values)
+    pos_x = df['pos_x'].values
+    pos_y = df['pos_y'].values
+    cmd_l = df['target_vel_left'].values
+    cmd_r = df['target_vel_right'].values
 
-    target_vels = target_vels[1:]  # remove first entry to align with state deltas
-    current_vels = current_vels[:-1]  # remove last entry to align with state deltas
-    pos_delta = []
-    for i in range(len(car_pos) - 1):
-        global_dx = target_pos[i][0] - car_pos[i][0]
-        global_dz = target_pos[i][1] - car_pos[i][1]
-        d_angle = target_pos[i][2] - car_pos[i][2]
-        if d_angle > 180:
-            d_angle -= 360
-        elif d_angle < -180:
-            d_angle += 360
-        
-        # convert global deltas to local car frame
-        angle_rad = np.radians(car_pos[i][2])
-        local_dx = global_dx * np.cos(-angle_rad) - global_dz * np.sin(-angle_rad)
-        local_dz = global_dx * np.sin(-angle_rad) + global_dz * np.cos(-angle_rad)
-        pos_delta.append([local_dx, local_dz, d_angle])
+    lookahead = 20  # number of steps to look ahead for target velocity
+    count = len(df) - lookahead
+    for i in range(count):
+        curr_vel_l = df['vel_left'].values[i]
+        curr_vel_r = df['vel_right'].values[i]
 
-    input_data = np.hstack((current_vels, pos_delta))  # concatenate current velocity and position deltas
-    output_data = np.array(target_vels)
+        delta_x = pos_x[i + lookahead] - pos_x[i]
+        delta_y = pos_y[i + lookahead] - pos_y[i]
+        delta_angle = angle[i + lookahead] - angle[i]
+        delta_angle = (delta_angle + np.pi) % (2 * np.pi) - np.pi  # normalize to [-pi, pi]
 
-    input_data, input_scaler = normalize(input_data)
-    output_data, output_scaler = normalize(output_data)
+        local_x = delta_x * np.cos(-angle[i]) - delta_y * np.sin(-angle[i])
+        local_y = delta_x * np.sin(-angle[i]) + delta_y * np.cos(-angle[i])
 
-    joblib.dump(input_scaler, os.path.join(os.path.dirname(__file__), '..', 'input_scaler.save'))
-    joblib.dump(output_scaler, os.path.join(os.path.dirname(__file__), '..', 'output_scaler.save'))
+        input_vector = [curr_vel_l, curr_vel_r, local_x, local_y, delta_angle]
+        output_vector = [cmd_l[i], cmd_r[i]]
 
-    train_size = int(0.8 * len(target_vels))
-    train_input = input_data[:train_size]
-    train_output = output_data[:train_size]
+        inputs.append(input_vector)
+        outputs.append(output_vector)
 
-    test_input = input_data[train_size:]
-    test_output = output_data[train_size:]
-    return train_input, train_output, test_input, test_output, input_scaler, output_scaler
+    return np.array(inputs, dtype=np.float32), np.array(outputs, dtype=np.float32)
 
 def loadConfig():
     config_path = os.path.join(os.path.dirname(__file__), '..', 'config.json')
