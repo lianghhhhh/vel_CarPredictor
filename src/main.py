@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from carPredictor import CarPredictor
 from torch.utils.tensorboard import SummaryWriter
+from sklearn.model_selection import train_test_split
 from torch.utils.data import TensorDataset, DataLoader
 from utils import getInputData, loadConfig, splitTrainVal
 
@@ -22,16 +23,8 @@ def trainModel(model, input_tensor, output_tensor, epochs=100, learning_rate=0.0
     else:
         print(f"Using new model {config['name']}.")
         
-    # Prepare sliding window dataset: use 10 steps to predict the next step
-    window_size = 10
-    X = []
-    Y = []
-    for i in range(len(input_tensor) - window_size):
-        X.append(input_tensor[i:i+window_size])
-        Y.append(output_tensor[i+window_size])
-    X = torch.stack(X)  # shape: (num_samples, window_size, vel_dim)
-    Y = torch.stack(Y)  # shape: (num_samples, state_dim)
-
+    X = input_tensor
+    Y = output_tensor
     train_x, train_y, val_x, val_y = splitTrainVal(X, Y)
 
     train_dataset = TensorDataset(train_x, train_y)
@@ -52,11 +45,11 @@ def trainModel(model, input_tensor, output_tensor, epochs=100, learning_rate=0.0
     for epoch in range(epochs):
         train_loss = 0.0
         for batch_input, batch_output in train_dataloader:
-            batch_input = batch_input.to(device)  # shape: (batch, window_size, vel_dim)
-            batch_output = batch_output.to(device)  # shape: (batch, state_dim)
+            batch_input = batch_input.to(device)
+            batch_output = batch_output.to(device)
             model.train()
             optimizer.zero_grad()
-            batch_input_flat = batch_input.view(batch_input.size(0), -1)  # flatten to (batch, window_size * vel_dim)
+            batch_input_flat = batch_input.view(batch_input.size(0), -1)  # flatten
             batch_pred = model(batch_input_flat)
             loss = criterion(batch_pred, batch_output)
             loss.backward()
@@ -90,15 +83,9 @@ def trainModel(model, input_tensor, output_tensor, epochs=100, learning_rate=0.0
     print(f'Model saved as {name}.pth')
 
 
-def runInference(model, input_tensor, output_tensor, output_scaler, name="model"):
-    window_size = 10
-    X = []
-    Y = []
-    for i in range(len(input_tensor) - window_size):
-        X.append(input_tensor[i:i+window_size])
-        Y.append(output_tensor[i+window_size])
-    X = torch.stack(X)  # shape: (num_samples, window_size, vel_dim)
-    Y = torch.stack(Y)  # shape: (num_samples, state_dim)
+def runInference(model, input_tensor, output_tensor, name="model"):
+    X = input_tensor
+    Y = output_tensor
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -110,16 +97,14 @@ def runInference(model, input_tensor, output_tensor, output_scaler, name="model"
 
     with torch.no_grad():
         for i in range(X.shape[0]):
-            input = X[i].view(1, -1)  # shape: (1, window_size * vel_dim)
+            input = X[i].view(1, -1)  # shape: (1, 4)
             x_dot_pred = model(input)  # shape: (1, 3)
-            pred_list.append(x_dot_pred.unsqueeze(0))  # shape: (1, 1, 3)
+            pred_list.append(x_dot_pred.unsqueeze(0))
 
     x_pred = torch.cat(pred_list, dim=0)
     x_pred = x_pred.cpu().numpy() # shape: (time_steps, 1, 3)
-    x_pred = output_scaler.inverse_transform(x_pred.reshape(-1, 3)).reshape(x_pred.shape)
-
+    
     Y = Y.cpu().numpy()
-    Y = output_scaler.inverse_transform(Y.reshape(-1, 3)).reshape(Y.shape)
 
     print(x_pred[0])
     print(Y[0])
@@ -127,12 +112,19 @@ def runInference(model, input_tensor, output_tensor, output_scaler, name="model"
     time_steps = np.arange(x_pred.shape[0])
     fig, axs = plt.subplots(3, 1, figsize=(10, 12))
     for i in range(3):
-        difference = x_pred[:, 0, i]-Y[:, i]
+        difference = x_pred[:, 0, i] - Y[:, i]
+        count = 0
+        for j in range(difference.shape[0]):
+            if abs(difference[j]) > 0.5:
+                count += 1
+                print(f'Time step {j}: Predicted={x_pred[j,0,i]}, Actual={Y[j,i]}, Difference={difference[j]}')
+        print(f'Total significant differences (>0.5): {count}')
         axs[i].plot(time_steps, difference, label='Difference', color='red')
         axs[i].set_title(f'Dimension {i+1}')
         axs[i].set_xlabel('Time Step')
         axs[i].set_ylabel('Value')
         axs[i].legend()
+
     plt.tight_layout()
     plt.savefig(f'../{name}.png')
     plt.close()
@@ -140,16 +132,17 @@ def runInference(model, input_tensor, output_tensor, output_scaler, name="model"
 if __name__ == "__main__":
     mode = selectMode()
     config = loadConfig()
-    train_input, train_output, test_input, test_output, input_scaler, output_scaler = getInputData(config['data'])
+    X, y = getInputData(config['data'])
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
 
-    train_input = torch.tensor(train_input).float()
-    train_output = torch.tensor(train_output).float()
-    test_input = torch.tensor(test_input).float()
-    test_output = torch.tensor(test_output).float()
+    X_train = torch.tensor(X_train).float()
+    y_train = torch.tensor(y_train).float()
+    X_test = torch.tensor(X_test).float()
+    y_test = torch.tensor(y_test).float()
 
     print("Sample")
-    print("input:", train_input[0:5], "shape:", train_input.shape)
-    print("output:", train_output[0:5], "shape:", train_output.shape)
+    print("input:", X_train[0:5], "shape:", X_train.shape)
+    print("output:", y_train[0:5], "shape:", y_train.shape)
     model = CarPredictor(
         hidden_size=config['model']['hidden_size'],
         dropout=config['model']['dropout']
@@ -157,17 +150,16 @@ if __name__ == "__main__":
 
     if mode == "1":
         print("Training model.")
-        trainModel(model, train_input, train_output, config['model']['epochs'], config['model']['learning_rate'], config['name'])
+        trainModel(model, X_train, y_train, config['model']['epochs'], config['model']['learning_rate'], config['name'])
 
     elif mode == "2":
         print("Inference")
         model.load_state_dict(torch.load(f'../{config["name"]}.pth'))
-        runInference(model, test_input, test_output, output_scaler, config['name'])
+        runInference(model, X_test, y_test, config['name'])
 
     else:
         model.load_state_dict(torch.load(f'../{config["name"]}.pth'))
         test_input = [100, 100, 100, 100]
-        test_input = input_scaler.transform(np.array(test_input))
         test_input = torch.tensor(test_input).float()
         test_output = [0,0,0,1]
         test_output = torch.tensor(test_output).float()
