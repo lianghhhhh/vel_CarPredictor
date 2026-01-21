@@ -4,6 +4,39 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 
+# def getInputData(data_path):
+#     df = pd.read_csv(data_path)
+#     inputs = []
+#     outputs = []
+
+#     angle = np.deg2rad(df['angle'].values)
+#     pos_x = df['pos_x'].values
+#     pos_y = df['pos_y'].values
+#     cmd_l = df['target_vel_left'].values
+#     cmd_r = df['target_vel_right'].values
+
+#     lookahead = 20  # number of steps to look ahead for target velocity
+#     count = len(df) - lookahead
+#     for i in range(count):
+#         curr_vel_l = df['vel_left'].values[i]
+#         curr_vel_r = df['vel_right'].values[i]
+
+#         delta_x = pos_x[i + lookahead] - pos_x[i]
+#         delta_y = pos_y[i + lookahead] - pos_y[i]
+#         delta_angle = angle[i + lookahead] - angle[i]
+#         delta_angle = (delta_angle + np.pi) % (2 * np.pi) - np.pi  # normalize to [-pi, pi]
+
+#         local_x = delta_x * np.cos(-angle[i]) - delta_y * np.sin(-angle[i])
+#         local_y = delta_x * np.sin(-angle[i]) + delta_y * np.cos(-angle[i])
+
+#         input_vector = [curr_vel_l, curr_vel_r, local_x, local_y, delta_angle]
+#         output_vector = [cmd_l[i], cmd_r[i]]
+
+#         inputs.append(input_vector)
+#         outputs.append(output_vector)
+
+#     return np.array(inputs, dtype=np.float32), np.array(outputs, dtype=np.float32)
+
 def getInputData(data_path):
     df = pd.read_csv(data_path)
     inputs = []
@@ -15,25 +48,32 @@ def getInputData(data_path):
     cmd_l = df['target_vel_left'].values
     cmd_r = df['target_vel_right'].values
 
-    lookahead = 20  # number of steps to look ahead for target velocity
-    count = len(df) - lookahead
+    lookaheads = [10, 20, 30]  # multiple lookahead steps
+    count = len(df) - max(lookaheads)
     for i in range(count):
         curr_vel_l = df['vel_left'].values[i]
         curr_vel_r = df['vel_right'].values[i]
+        curr_x = pos_x[i]
+        curr_y = pos_y[i]
+        curr_angle = angle[i]
 
-        delta_x = pos_x[i + lookahead] - pos_x[i]
-        delta_y = pos_y[i + lookahead] - pos_y[i]
-        delta_angle = angle[i + lookahead] - angle[i]
-        delta_angle = (delta_angle + np.pi) % (2 * np.pi) - np.pi  # normalize to [-pi, pi]
+        input_vector = [curr_vel_l, curr_vel_r]
 
-        local_x = delta_x * np.cos(-angle[i]) - delta_y * np.sin(-angle[i])
-        local_y = delta_x * np.sin(-angle[i]) + delta_y * np.cos(-angle[i])
+        for k in lookaheads:
+            delta_x = pos_x[i + k] - curr_x
+            delta_y = pos_y[i + k] - curr_y
+            delta_angle = angle[i + k] - curr_angle
+            delta_angle = (delta_angle + np.pi) % (2 * np.pi) - np.pi  # normalize to [-pi, pi]
 
-        input_vector = [curr_vel_l, curr_vel_r, local_x, local_y, delta_angle]
-        output_vector = [cmd_l[i], cmd_r[i]]
+            local_x = delta_x * np.cos(-curr_angle) - delta_y * np.sin(-curr_angle)
+            local_y = delta_x * np.sin(-curr_angle) + delta_y * np.cos(-curr_angle)
+
+            input_vector.append(local_x)
+            input_vector.append(local_y)
+            input_vector.append(delta_angle)
 
         inputs.append(input_vector)
-        outputs.append(output_vector)
+        outputs.append([cmd_l[i], cmd_r[i]])
 
     return np.array(inputs, dtype=np.float32), np.array(outputs, dtype=np.float32)
 
