@@ -19,18 +19,19 @@ def getInputData(data_path):
         if curr_angle > np.pi:
             curr_angle -= 2 * np.pi  # normalize to [-pi, pi]
 
-        input_vector = [-curr_vel_l, -curr_vel_r]
+        input_vector = [curr_vel_l, curr_vel_r]
         output_vector = []
 
         for k in range(10):  # 10 target points
             target_x = df[f'target_x_{k}'].values[i]
             target_y = df[f'target_y_{k}'].values[i]
-            target_angle = df[f'target_angle_{k}'].values[i]
+            target_angle = np.deg2rad(df[f'target_angle_{k}'].values[i]) 
+            
             delta_x = target_x - curr_x
             delta_y = target_y - curr_y
             local_x = delta_x * np.cos(-curr_angle) - delta_y * np.sin(-curr_angle)
             local_y = delta_x * np.sin(-curr_angle) + delta_y * np.cos(-curr_angle)
-            delta_angle = target_angle - curr_angle
+            delta_angle = target_angle # already calculate as error angle
             delta_angle = (delta_angle + np.pi) % (2 * np.pi) - np.pi  # normalize to [-pi, pi]
             input_vector.append(local_x)
             input_vector.append(local_y)
@@ -51,12 +52,13 @@ def getInputData(data_path):
         for k in range(3):  # 3 planned path points
             planned_x = df[f'planned_x_{k}'].values[i]
             planned_y = df[f'planned_y_{k}'].values[i]
-            planned_angle = df[f'planned_angle_{k}'].values[i]
+            planned_angle = np.deg2rad(df[f'planned_angle_{k}'].values[i]) 
+            
             delta_x = planned_x - curr_x
             delta_y = planned_y - curr_y
             local_x = delta_x * np.cos(-curr_angle) - delta_y * np.sin(-curr_angle)
             local_y = delta_x * np.sin(-curr_angle) + delta_y * np.cos(-curr_angle)
-            delta_angle = planned_angle - curr_angle
+            delta_angle = planned_angle # already calculate as error angle
             delta_angle = (delta_angle + np.pi) % (2 * np.pi) - np.pi  # normalize to [-pi, pi]
             output_vector.append(local_x)
             output_vector.append(local_y)
